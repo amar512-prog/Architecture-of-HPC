@@ -134,6 +134,91 @@ Remember:
 - External inputs for the fetch unit: branch target (branchPC), instruction contents, and isBranchTaken signal.
 - Conditions for setting isBranchTaken determined by the branch unit.
 - Flags register analyzed for conditional branch instructions.
+## Data Path and Control Path
+
+In a processor, there are two types of elements: data elements and control elements. The data elements include registers, memories, and arithmetic/logic circuits responsible for processing data values. On the other hand, the control elements, known as the control unit, determine the flow and direction of data. The control unit generates signals to control multiplexers and other components involved in the data flow. These signals, known as control signals, regulate the flow of information within the processor.
+
+Conceptually, a processor can be divided into two subsystems: the data path and the control path. The data path comprises elements involved in storing and processing information. This includes the data memory, instruction memory, register file, and the arithmetic logic unit (ALU). The memories and register file store information, while the ALU performs computations and operations on the data.
+
+On the other hand, the control path directs the flow of information by generating control signals. An example of this is seen, where the control path generates a signal to select between the branch target and the default next program counter (PC) using a multiplexer controlled by the isBranchTaken signal.
+
+To understand the relationship between the data path and control path, we can use the analogy of a city's traffic network. The roads and traffic lights represent the data path, where cars (instructions) flow. The control path is similar to the circuits that control the traffic lights. It determines the timing and transitions of the lights to manage the flow of traffic effectively. In modern smart cities, the control of traffic lights is often integrated to intelligently route cars around congested areas and accidents. Similarly, the control unit in a processor is responsible for executing instructions efficiently.
+
+To summarize:
+- **Data Path**: Consists of elements dedicated to storing, retrieving, and processing data, such as register files, memories, and ALUs.
+- **Control Path**: Primarily contains the control unit, which generates signals to control the movement of instructions and data in the data path.
+### OF unit
+The Operand Fetch Unit is responsible for two main functions in the processor: (1) calculating the values of immediate operands and branch targets, and (2) reading the values of the source registers.
+
+1. Computation of the Immediate Operand and Branch Target:
+   - To calculate the immediate operand, the imm field (bits 1-18) is extracted from the instruction.
+   - The lower 16 bits are then extracted, and a 32-bit constant is created based on the modifiers (bits 17 and 18).
+   - Depending on the modifier, different operations are performed:
+     - No modifier: The sign of the 16-bit number is extended to make it a 32-bit number.
+     - u modifier: The top 16 bits are filled with zeros.
+     - h modifier: The 16-bit number is shifted 16 positions to the left.
+   - The resulting 32-bit value is referred to as immx.
+   - Divide the 18 bits into two parts – 2 bits (modifier) + 16 bits (constant part of the immediate). The two modifier bits can take three values – 00 (default), 01 (‘u’), and 10 (‘h’). The remaining 16 bits are used to specify a 16-bit 2’s complement number when we are using default modifiers. For the u and h modifiers, we assume that the 16-bit constant in the immediate field is an unsigned number
+   - Here's a table showing the different modifier types based on the values of the 17th and 18th bits and their corresponding interpretations:
+
+      | 17th Bit | 18th Bit | Modifier | Interpretation                              |
+      |----------|----------|----------|---------------------------------------------|
+      | 0        | 0        | No       | Sign-extend the 16-bit number                |
+      | 0        | 1        | u        | Fill top 16 bits with 0s (unsigned)          |
+      | 1        | 0        | h        | Shift 16-bit number left by 16 positions      |
+      | 1        | 1        | Reserved | Reserved (specific interpretation not defined) |
+
+      - Please note that the "Reserved" category indicates that the specific combination of the 17th and 18th bits is not defined or reserved for future use.
+
+   - Similarly, the branch target (branchTarget) is computed for all types of branches except the ret instruction.
+   - An instruction takes 4 bytes. If we assume that all instructions are aligned to 4-byte boundaries, then all starting memory addresses of instructions will be a multiple of 4. Hence, the least two significant binary digits of the address will be 00. There is no reason for wasting bits in trying to specify them. We can assume that the 27 bits specify the offset of the address of the memory word (in units of 4-byte memory words) that contains the instruction. With this optimisation, the offset from the PC in terms of bytes becomes 29 bits.
+   - The 27-bit offset (bits 1 to 27) is extracted from the instruction.
+   - The offset is left-shifted by 2 bits to convert it into a 29-bit number representing memory words.
+   - The sign of the offset is extended to make it a 32-bit number.
+   - For PC-relative addressing, the shifted offset is added to the value of the program counter (PC) to obtain the branch target.
+   - In the case of the ret instruction, the branch target is the contents of the ra register, which is obtained from the register file.
+   - The branch target can be derived either from the instruction (branchTarget signal) or from the ra register. The selection is made in the next stage to compute branchPC.
+
+   - It's important to note that although both branchTarget and immx are calculated for all instructions, each instruction type only requires one of these fields. The other field will contain junk values. However, it's faster to pre-compute both values to ensure the correct value is used in subsequent stages.
+
+2. Reading the Registers:
+   - The values of the source registers are read in parallel.
+   - The register file has 16 registers, two read ports, and one write port.
+   - To read the first register operand (op1), there are two choices:
+     - For ALU and memory instructions, the first source register (rs1) specified by bits 19 to 22 in the instruction is read.
+     - For the ret instruction, the value of the return address register (ra) is read.
+     - A multiplexer is used to select between rs1 and ra, controlled by the isRet signal. If isRet is 1, ra is chosen; otherwise, rs1 is chosen.
+     - The output of the first read port is denoted as op1.
+
+   - A similar multiplexer is used for the second read port of the register file.
+   - For all instructions except the store instruction, the second source register (rs2) is specified by bits 15 to 18 in the instruction.
+   - However, for the store instruction, the source register is specified by the rd field (bits 23 to 26).
+   - To determine whether the instruction is a store, a comparison is performed by checking if the opcode is equal to 01111.
+   - The result of the comparison sets the isSt signal to indicate whether it's a store instruction.
+   - The multiplexer for the second register operand (op2) is controlled by the isSt signal. If isSt is 1, rd is chosen; otherwise, rs2 is chosen.
+
+   - The opcode (5 bits) and the immediate bit (1 bit) are also sent to the control unit to generate the necessary control signals.
+
+## Execute Unit
+
+In the execution stage of the pipeline, instructions are divided into two types: branch instructions and non-branch instructions.  
+   - The branch instructions are handled by a dedicated branch unit, while the non-branch instructions are processed by the ALU (arithmetic logic unit).
+
+Branch Unit:
+The circuit for the branch unit is shown in Figure 8.8. It involves the following components:
+- A multiplexer is used to select between the value of the return address (op1) and the branch target embedded in the instruction. The selection is controlled by the isRet signal. If isRet = 1, op1 is chosen; otherwise, the branch target is selected. The output of the multiplexer is the branchPC, which is sent to the fetch unit.
+- To determine the outcome of a branch instruction, let's take the example of the beq instruction. The SimpleRisc instruction set requires a flags register that contains the result of the last compare (cmp) instruction. The flags register has two bits: E (for equality) and GT (for greater than). For the beq instruction, the isBeq signal is set to 1. We need to compute a logical AND of this signal and the value of the E bit in the flags register. If both are 1, the branch is taken. Similar logic applies to the bgt instruction. For unconditional branches (call/ret/b), the isUBranch signal is set to 1. If any of these conditions are true, the branch is taken. An OR gate is used to compute the outcome of the branch and set the isBranchTaken signal, which is used by the fetch unit to control the multiplexer generating the next PC.
+
+ALU:
+Figure 8.9 illustrates the ALU portion of the execution unit. It consists of the following components:
+- The first operand (A) of the ALU is always op1 obtained from the operand fetch unit. The second operand (B) can be either a register or the sign-extended immediate value. The selection is determined by the isImmediate signal generated by the control unit. If isImmediate = 1, the immediate value (immx) is chosen as the operand. Otherwise, op2 is selected.
+- The ALU takes a set of signals called aluSignals as input, which specify the type of ALU operation to be performed.
+- The ALU performs various arithmetic and logical operations, such as addition, subtraction, multiplication, division, shifting, and logical operations (AND, OR, NOT). Each operation is performed by a dedicated module within the ALU. Each module has an enabling signal that determines whether it is active or disabled, conserving power when not needed.
+- The output of the ALU is referred to as aluResult.
+
+The ALU design, shown in Figure 8.10, consists of modules for different operations. Each module is enabled or disabled based on the corresponding signal. For example, the adder module is used by add, sub, and cmp instructions, as well as by load and store instructions to compute memory addresses. The multiplier and divider modules function in a similar manner. The shift unit performs left and right shifts, and the logical unit performs AND, OR, and NOT operations. The Mov unit simply outputs the value of B when the isMov signal is true.
+
+The full design of the execution unit (branch unit and ALU) is depicted in Figure 8.12. It includes the branch unit circuitry, the ALU modules, and the output multiplexer (not shown in the figure). The ALU output, aluResult, is determined by selecting the appropriate output from the ALU modules using a multiplexer.
 
 ## Pipeline Stages Modification
 
@@ -176,3 +261,5 @@ Remember:
 - Inputs, along with the default next PC (current PC + 4), connected to a multiplexer to choose the value to be written back.
 - Rest of the circuit remains the same as in the single-cycle processor.
 - No pipeline register at the end of the RW stage since it is the last stage in the pipeline.
+
+> Notes Reference: Basic Architecture by Smruti R. Sarangi
